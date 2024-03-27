@@ -1,0 +1,138 @@
+#+title: Autocorrect
+#+subtitle: Spellchecker-agnostic autocorrect for Emacs
+#+author: tecosaur
+
+Automatically build an autocorrection =abbrev= table that fixes misspellings and
+typos on-the-fly.
+
+Compared to simply adding a correction to the global abbrev table whenever a
+correction is made, =autocorrect=:
++ Allows setting a minimum number of occurrences before a correction becomes
+  automatic, both on an all-time level and within the current session.
++ Manages its abbrev table independently of the user abbrev tables
++ Allows multiple Emacs sessions to all contribute to the same autocorrection
+  list, without race conditions
++ Makes combining autocorrect data across machines easy: just concatenate the
+  autocorrect data files
++ Recognises that some but not all words are the same in upper and lower case.
+  For example "teh" and "Teh" should become "the" and "The" respectively, but
+  only "Bayex" should become "Bayeux".
++ Allows certain words to be ignored, i.e. never be autocorrected
+
+* Activation
+
+Some time soon after startup, run ~autocorrect-setup~. I like to do this with an
+idle timer.
+
+#+begin_src emacs-lisp
+(run-with-idle-timer 0.5 nil #'autocorrect-setup)
+#+end_src
+
+Remember to hook up the spell checker you're using, make sure =abbrev= mode is on,
+and you're good to go.
+
+* Spellchecker integration
+** Generic
+
+=autocorrect= needs to be told when a spelling correction has been made. This
+should be done through the function ~autocorrect-record-correction~.
+
+At a bare minimum, just invoking ~autocorrect-record-correction~ appropriately
+will make =autocorrect= start working, however there are two more optional steps
+to integration that can enhance the experience.
+1. Set ~autocorrect-check-spelling-function~ so that letter casing is handled a bit better
+2. Set ~autocorrect-predicates~ to control where corrections can occur
+
+** Jinx
+
+#+begin_src emacs-lisp
+(defun autocorrect-jinx-record-correction (overlay corrected)
+  "Record that Jinx corrected the text in OVERLAY to CORRECTED."
+  (let ((text
+         (buffer-substring-no-properties
+          (overlay-start overlay)
+          (overlay-end overlay))))
+    (autocorrect-record-correction text corrected)))
+
+(defun autocorrect-jinx-check-spelling (word)
+  "Check if WORD is valid."
+  ;; A copy of `jinx--word-valid-p', just without the buffer substring.
+  ;; It would have been nice if `jinx--word-valid-p' war implemented as this
+  ;; function with `jinx--this-word-valid-p' (or similar) as the at-point variant.
+  (or (member word jinx--session-words)
+      ;; Allow capitalized words
+      (and (string-match-p "\\`[[:upper:]][[:lower:]]+\\'" word)
+           (cl-loop
+            for w in jinx--session-words
+            thereis (and (string-equal-ignore-case word w)
+                         (string-match-p "\\`[[:lower:]]+\\'" w))))
+      (cl-loop for dict in jinx--dicts
+               thereis (jinx--mod-check dict word))))
+
+(defun autocorrect-jinx-appropriate (pos)
+  "Return non-nil if it is appropriate to spellcheck at POS according to jinx."
+  (and (not (jinx--face-ignored-p pos))
+       (not (jinx--regexp-ignored-p pos))))
+
+(setq autocorrect-check-spelling-function #'autocorrect-jinx-check-spelling)
+(add-to-list 'autocorrect-predicates #'autocorrect-jinx-appropriate)
+(advice-add 'jinx--correct-replace :before #'autocorrect-jinx-record-correction)
+#+end_src
+
+** Flyspell
+
+#+begin_src emacs-lisp
+(defvar-local autocorrect-flyspell-misspelling)
+
+(defun autocorrect-flyspell-insert (word)
+  "Insert WORD and record the correction with autocorrect.el."
+  (autocorrect-record-correction
+   (or autocorrect-flyspell-misspelling flyspell-auto-correct-word)
+   word)
+  (insert word))
+
+(defun autocorrect--flyspell-do-correct-a (oldfun replace poss word cursor-location start end save)
+  "Wraps `flyspell-do-correct' to store the word it's correcting."
+  (let ((autocorrect-flyspell-misspelling word))
+    (funcall oldfun replace poss word cursor-location start end save)))
+
+(setq flyspell-insert-function autocorrect-flyspell-insert)
+(advice-add 'flyspell-do-correct :around #'autocorrect--flyspell-do-correct-a)
+#+end_src
+
+* Why use autocorrection?
+
+If you want to write without looking like you skipped a chunk of
+primary/secondary school (as I do), then autocorrect is a handy thing to have.
+Beyond just misspellings, it can also help with typos, and lazy capitalisation
+(can you really be bothered to consistently type "LuaLaTeX" instead of
+"lualatex" and "SciFi" over "scifi"?). However, primarily thanks to smartphones,
+I more often hear people cursing autocorrect than praising it. With that in
+mind, I think it's worth giving some thought to how smartphone autocorrect gets
+its bad reputation (despite largely doing a decent job):
+1. Typing is harder on smartphones, and so autocorrect makes bigger (more speculative) guesses
+2. People type (and mistype) differently, but autocorrect tries to have a "one
+   size fits all" profile that is refined over time
+3. As soon as you accept a particular correction, autocorrect can start applying
+   that even when the original typo is ambiguous and has multiple "corrected" forms
+4. It's hard to tell the phone to stop doing a particular autocorrect (see
+   "Emacs" recapitalised as "eMacs" on Apple devices)
+
+I think we can largely alleviate these problems by
+1. Being mainly used on devices with actual keyboards
+2. Starting with an empty autocorrect "profile", built up by the user over time
+3. Having a customisable threshold before a repeated correction is made into an
+   autocorrection, and blacklisting misspellings with multiple distinct corrections.
+4. Making it easy to blacklist certain words from becoming autocorrections
+
+Another complaint about autocorrect is that it lets you develop bad habits, and
+if anything a tool that got you to retype the correct spelling several times
+would be more valuable in the long run. I think this is a pretty reasonable
+complaint, and have two different trains of thought that both justify tracking
+corrections made:
++ I almost never leave Emacs for writing more than a text message, so what if I
+  type worse outside of it?
++ By tracking corrections made, you can also make a personal "most common
+  misspellings" training list to run through at your leasure or when committing
+  a misspelling. Just set the "minimum replacement count" to a stupidly high
+  number and optionally make use of ~autocorrect-post-correct-hook~.
