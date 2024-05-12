@@ -419,11 +419,17 @@ with a non-zero :count field, adds that value to the autocorrect count via
            (push (list (cons misspelling correction)
                        (vector
                         (if (and ambiguous-p (not ignored-p))
-                            (concat misspelling " "
-                                    (propertize (format "(%d)"
-                                                        (- (length corrections)
-                                                           (length (assoc (car correction) corrections))))
-                                                'face 'shadow))
+                            (progn
+                              (setq misspelled-col-width (max misspelled-col-width (+ (length misspelling) 4)))
+                              (concat misspelling " "
+                                      (propertize "(" 'face 'shadow)
+                                      (propertize
+                                       (number-to-string
+                                        (- (length corrections)
+                                           (length (memq correction corrections))
+                                           -1))
+                                       'face '(italic shadow))
+                                      (propertize ")" 'face 'shadow)))
                           (propertize misspelling
                                       'face (if ignored-p 'shadow 'default)))
                         (concat
